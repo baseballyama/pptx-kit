@@ -41,6 +41,22 @@ export interface RenderImageOptions {
    * result to control its lifetime, or a custom measurer to swap fonts.
    */
   readonly measureText?: TextMeasurer;
+  /**
+   * Extra font files (ttf / otf / ttc paths) loaded into the rasterizer in
+   * addition to the bundled Latin faces. The bundled set has no CJK
+   * coverage, so decks with Japanese / Chinese / Korean text render as
+   * missing-glyph boxes unless the caller supplies a face here (pair it with
+   * a {@link buildFontkitMeasurer} `fonts` registration so wrap math uses the
+   * same metrics).
+   */
+  readonly fontFiles?: ReadonlyArray<string>;
+  /**
+   * Also let the rasterizer discover OS-installed fonts as a fallback for
+   * families the bundled + `fontFiles` faces don't cover. Defaults to
+   * `false`: system fonts vary per machine, so the default keeps output
+   * deterministic.
+   */
+  readonly loadSystemFonts?: boolean;
 }
 
 const DEFAULT_WIDTH = 1280;
@@ -61,8 +77,8 @@ const rasterize = (pres: PresentationData, slide: SlideData, opts: RenderImageOp
   const resvg = new Resvg(svg, {
     fitTo: { mode: 'width', value: width },
     font: {
-      loadSystemFonts: false, // deterministic: only the bundled fonts
-      fontFiles: FONT_FILES,
+      loadSystemFonts: opts.loadSystemFonts ?? false, // default: deterministic bundled set
+      fontFiles: [...FONT_FILES, ...(opts.fontFiles ?? [])],
       defaultFontFamily: SANS,
       sansSerifFamily: SANS,
       serifFamily: SERIF,
