@@ -6382,6 +6382,47 @@ const buildEffectsFilter = (
 // ---------------------------------------------------------------------------
 // Slide composition.
 
+// getSlideShapes / getSlideLayoutShapes / getSlideMasterShapes flatten group
+// descendants into the returned list (document order: each group is followed
+// immediately by its descendants), while renderShape already recurses into
+// groups and draws every child with the group transform applied. Rendering
+// the flat list verbatim would therefore paint each group child a second
+// time, untransformed — visibly offset whenever the group's chOff differs
+// from its off. Walk the flat list and skip each group's descendants.
+//
+// The decoration readers (layout / master) additionally drop placeholder
+// shapes from their flat list, so placeholder descendants must not be
+// counted when skipping.
+const flattenedDescendantCount = (group: SlideShapeData, dropPlaceholders: boolean): number => {
+  let count = 0;
+  for (const child of getGroupChildren(group)) {
+    if (!dropPlaceholders || !isShapePlaceholder(child)) count += 1;
+    if (getShapeKind(child) === 'group') {
+      count += flattenedDescendantCount(child, dropPlaceholders);
+    }
+  }
+  return count;
+};
+
+const topLevelShapes = (
+  shapes: ReadonlyArray<SlideShapeData>,
+  opts: { dropPlaceholders: boolean },
+): SlideShapeData[] => {
+  const out: SlideShapeData[] = [];
+  let skip = 0;
+  for (const shape of shapes) {
+    if (skip > 0) {
+      skip -= 1;
+      continue;
+    }
+    out.push(shape);
+    if (getShapeKind(shape) === 'group') {
+      skip = flattenedDescendantCount(shape, opts.dropPlaceholders);
+    }
+  }
+  return out;
+};
+
 export const renderSlideSvg = (
   pres: PresentationData,
   slide: SlideData,
@@ -6487,8 +6528,12 @@ export const renderSlideSvg = (
   const layoutForBg = getSlideLayout(slide);
   if (layoutForBg) {
     try {
-      const masterShapes = getSlideMasterShapes(pres, layoutForBg);
-      const layoutShapes = getSlideLayoutShapes(pres, layoutForBg);
+      const masterShapes = topLevelShapes(getSlideMasterShapes(pres, layoutForBg), {
+        dropPlaceholders: true,
+      });
+      const layoutShapes = topLevelShapes(getSlideLayoutShapes(pres, layoutForBg), {
+        dropPlaceholders: true,
+      });
       layoutBgShapes = [...masterShapes, ...layoutShapes]
         .map((s) => renderShape(s, pres, theme, ctx))
         .join('');
@@ -6497,7 +6542,7 @@ export const renderSlideSvg = (
     }
   }
 
-  const shapesSvg = getSlideShapes(slide)
+  const shapesSvg = topLevelShapes(getSlideShapes(slide), { dropPlaceholders: false })
     .map((s) => renderShape(s, pres, theme, ctx))
     .join('');
 
