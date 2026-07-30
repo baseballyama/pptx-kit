@@ -12,6 +12,7 @@ import {
   addSlide,
   addSlideTextBox,
   findSlideLayout,
+  groupShapes,
   loadPresentation,
   inches,
   setShapeTextAutoFit,
@@ -66,6 +67,29 @@ describe('auditTextLayout — overflow', () => {
     expect(oy).toBeDefined();
     expect(oy!.kind === 'overflow-y' && oy!.overflowPx).toBeGreaterThan(1);
     expect(oy!.approximate).toBe(false);
+  });
+
+  it('audits a group child exactly once (flattened list is not re-recursed)', async () => {
+    const { pres, slide } = await blankSlide();
+    const overflowing = addSlideTextBox(slide, {
+      x: inches(1),
+      y: inches(1),
+      w: inches(2),
+      h: inches(0.5),
+      text: LONG_PARAGRAPH,
+      name: 'grouped-tall',
+    });
+    const sibling = addSlideTextBox(slide, {
+      x: inches(4),
+      y: inches(1),
+      w: inches(4),
+      h: inches(1),
+      text: 'Fits fine',
+      name: 'grouped-fits',
+    });
+    groupShapes([overflowing, sibling]);
+    const issues = ofShape(auditTextLayout(pres, { measureText }), 'grouped-tall');
+    expect(issues.filter((i) => i.kind === 'overflow-y')).toHaveLength(1);
   });
 
   it('reports overflow-x for wrap="none" text wider than the box', async () => {

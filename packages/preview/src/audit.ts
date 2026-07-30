@@ -12,7 +12,6 @@
 // `@office-kit/pptx-preview/node` for glyph-accurate metrics.
 
 import {
-  getGroupChildren,
   getPresentationTheme,
   getShapeBoundsResolved,
   getShapeKind,
@@ -83,16 +82,15 @@ const DEFAULT_TOLERANCE_PX = 1;
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
-// Depth-first over group trees. Children are audited in their own (child)
-// coordinate space, where box and text agree; a group's non-uniform scale
-// stretches both equally in the rendered output, so overflow verdicts hold.
+// getSlideShapes already flattens group descendants into the list, so a
+// plain filter reaches every auditable shape exactly once — recursing into
+// groups on top of that would audit each child twice. Children are audited
+// in their own (child) coordinate space, where box and text agree; a group's
+// non-uniform scale stretches both equally in the rendered output, so
+// overflow verdicts hold.
 function* walkShapes(shapes: ReadonlyArray<SlideShapeData>): Generator<SlideShapeData> {
   for (const shape of shapes) {
-    if (getShapeKind(shape) === 'group') {
-      yield* walkShapes(getGroupChildren(shape));
-    } else {
-      yield shape;
-    }
+    if (getShapeKind(shape) !== 'group') yield shape;
   }
 }
 
