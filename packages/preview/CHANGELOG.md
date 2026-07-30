@@ -1,5 +1,33 @@
 # pptx-kit-preview
 
+## 0.8.0
+
+### Minor Changes
+
+- a4f03a4: feat: let `renderSlideToImage` / `renderSlideToRgba` load extra rasterizer fonts
+
+  `RenderImageOptions` gains `fontFiles` (extra ttf / otf / ttc paths handed to
+  resvg alongside the bundled Latin faces) and `loadSystemFonts` (opt-in OS font
+  fallback, default `false` to keep output deterministic). The bundled set has
+  no CJK coverage, so decks with Japanese / Chinese / Korean text previously
+  rasterized as missing-glyph boxes with no way to fix it — now callers can
+  supply a CJK face, pairing it with `buildFontkitMeasurer({ fonts })` so wrap
+  math and painted glyphs use the same metrics.
+
+### Patch Changes
+
+- dc6b2eb: fix: render group children exactly once
+
+  `getSlideShapes` / `getSlideLayoutShapes` / `getSlideMasterShapes` flatten
+  group descendants into their result, while `renderSlideToSvg` already recurses
+  into groups and draws every child with the group transform applied. Rendering
+  the flat list verbatim painted each group child a second time, untransformed —
+  visibly offset whenever the group's `chOff` differs from its `off` (common in
+  Google Slides exports, e.g. shape-built charts showing doubled axis labels).
+
+  `auditTextLayout` had the same double-enumeration and reported each group
+  child's issues twice; it now audits every shape exactly once.
+
 ## 0.7.0
 
 ### Minor Changes
