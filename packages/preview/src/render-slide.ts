@@ -2147,13 +2147,6 @@ const renderRun = (
 // `line-height` declaration in renderRun.
 const LINE_HEIGHT = 1.05;
 
-// Rough mean glyph width as a fraction of font-size in a typical
-// sans-serif. 0.55 is what PowerPoint's auto-fit estimator uses for
-// Calibri at body sizes. Used to estimate when text wraps so the
-// renderer can shrink the font to keep wrapped placeholders from
-// overflowing.
-const AVG_GLYPH_W_RATIO = 0.55;
-
 // `<a:normAutofit/>` shrink-to-fit search bounds. PowerPoint reduces the font
 // in discrete steps until the body fits its box; we sweep from 1.0 down to the
 // floor in fixed decrements. The floor stops a pathologically small box from
@@ -2754,51 +2747,17 @@ export const resolveTextBodyModel = (
   // computed one (`<a:normAutofit fontScale=…/>`). That's the same
   // multiplier PowerPoint applies on-screen, so honouring it is what
   // brings the rendered size into 1:1 agreement with the deck.
+  //
+  // No estimation happens for shapes WITHOUT `<a:normAutofit>`: PowerPoint
+  // never shrinks those — `<a:noAutofit>` (and no autofit at all) simply
+  // overflows the box, and `<a:spAutoFit>` grows the box instead of the text.
+  // An earlier heuristic shrank such shapes to fit their authored box, which
+  // rendered template placeholders (size inherited from layout/master, box
+  // sized by the template author) at up to 0.4× of their PowerPoint size.
   const authoredAutofit = getShapeTextAutoFitParams(shape);
   let autoFitScale = authoredAutofit?.fontScale ?? 1;
-  let lineHeightScale = 1 - (authoredAutofit?.lnSpcReduction ?? 0);
+  const lineHeightScale = 1 - (authoredAutofit?.lnSpcReduction ?? 0);
 
-  // Only fall back to the heuristic estimator when no authored
-  // autofit ran. CJK glyphs are ~1em wide vs the ~0.55em Latin
-  // average, so detect a leading CJK character per paragraph and
-  // widen the per-line estimate accordingly — keeps Japanese titles
-  // from over-shrinking on placeholders that already fit.
-  if (!authoredAutofit) {
-    const innerWPx = innerW / EMU_PER_PX;
-    const innerHPx = innerH / EMU_PER_PX;
-    let totalH = 0;
-    for (const para of paraData) {
-      let maxSize = defaultPt;
-      let totalChars = 0;
-      let cjkChars = 0;
-      for (const run of para.runs) {
-        if (run.sizePt > maxSize) maxSize = run.sizePt;
-        totalChars += run.text.length;
-        for (let i = 0; i < run.text.length; i++) {
-          const c = run.text.charCodeAt(i);
-          // CJK Unified Ideographs, Hiragana, Katakana, Hangul.
-          if (
-            (c >= 0x3040 && c <= 0x309f) ||
-            (c >= 0x30a0 && c <= 0x30ff) ||
-            (c >= 0x4e00 && c <= 0x9fff) ||
-            (c >= 0xac00 && c <= 0xd7af)
-          )
-            cjkChars++;
-        }
-      }
-      if (totalChars === 0) totalChars = 1;
-      const cjkRatio = cjkChars / totalChars;
-      // Weighted average: CJK glyphs ≈ 1.0em wide, Latin ≈ 0.55em.
-      const glyphRatio = cjkRatio * 1.0 + (1 - cjkRatio) * AVG_GLYPH_W_RATIO;
-      const sizePx = maxSize * PX_PER_PT;
-      const charsPerLine = Math.max(1, Math.floor(innerWPx / Math.max(1, sizePx * glyphRatio)));
-      const lineCount = Math.max(1, Math.ceil(totalChars / charsPerLine));
-      totalH += sizePx * LINE_HEIGHT * lineCount;
-    }
-    if (totalH > innerHPx) {
-      autoFitScale = Math.max(0.4, innerHPx / totalH);
-    }
-  }
   // Apply line-height reduction by tightening per-line spacing. We
   // pass it through to renderRun via a closed-over factor.
   const effectiveLineHeight = LINE_HEIGHT * lineHeightScale;
