@@ -5122,9 +5122,12 @@ const renderChart = (
     const primarySeries = baked.filter((s) => s.secondaryAxis !== true);
     const secondarySeries = baked.filter((s) => s.secondaryAxis === true);
     const primaryScale = seriesMinMax({ ...spec, series: primarySeries });
+    // The authored valueAxis min/max targets the PRIMARY axis; the
+    // secondary axis always auto-scales from its own series.
+    const { valueAxis: _primaryOnlyAxis, ...specWithoutAxis } = spec;
     const secondaryScale =
       secondarySeries.length > 0
-        ? seriesMinMax({ ...spec, series: secondarySeries, valueAxis: undefined })
+        ? seriesMinMax({ ...specWithoutAxis, series: secondarySeries })
         : null;
 
     const N = pointCount(spec);
