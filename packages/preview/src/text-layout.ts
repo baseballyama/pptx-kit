@@ -258,8 +258,7 @@ type LineBuilder = (contentLeft: number, contentRight: number) => { lines: Line[
 // breaks East Asian runs between any two characters. Split CJK runs into
 // per-character tokens, gluing closing punctuation to its predecessor and
 // opening brackets to their successor (simple kinsoku).
-const EAST_ASIAN_CHAR =
-  /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+const EAST_ASIAN_CHAR = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
 const CLOSING_PUNCT = /^[、。，．・）」』】〉》”’！？：；ー〜…,.!?:;)\]}]+$/;
 const OPENING_PUNCT = /^[（「『【〈《“‘(\[{]+$/;
 
