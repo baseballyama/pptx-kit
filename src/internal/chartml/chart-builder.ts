@@ -342,6 +342,46 @@ const seriesElement = (spec: ChartSpec, seriesIdx: number, sheet: string): XmlEl
 // needs them stable within the chart for the `<c:crossAx>` back-pointer.
 const CAT_AX_ID = 111111111;
 const VAL_AX_ID = 222222222;
+// Secondary axis pair for combo charts (series with `secondaryAxis: true`).
+const SEC_CAT_AX_ID = 333333333;
+const SEC_VAL_AX_ID = 444444444;
+
+interface AxisIdPair {
+  readonly cat: number;
+  readonly val: number;
+}
+
+const PRIMARY_AXES: AxisIdPair = { cat: CAT_AX_ID, val: VAL_AX_ID };
+const SECONDARY_AXES: AxisIdPair = { cat: SEC_CAT_AX_ID, val: SEC_VAL_AX_ID };
+
+/** Category kinds that can participate in a combo plot-group split. */
+const COMBO_KINDS = new Set<string>(['bar', 'column', 'line', 'area']);
+
+const effectiveSeriesKind = (spec: ChartSpec, seriesIdx: number): string =>
+  spec.series[seriesIdx]?.chartKind ?? spec.kind;
+
+/**
+ * Splits the series into plot groups keyed by (effective kind, axis).
+ * Primary-axis groups come first so secondary overlays paint on top,
+ * and bar groups precede line/area within each axis for the same reason
+ * (matching PowerPoint's combo emit order).
+ */
+const comboPlotGroups = (
+  spec: ChartSpec,
+): { kind: string; secondary: boolean; indices: number[] }[] => {
+  const groups = new Map<string, { kind: string; secondary: boolean; indices: number[] }>();
+  for (let i = 0; i < spec.series.length; i++) {
+    const kind = effectiveSeriesKind(spec, i);
+    const secondary = spec.series[i]?.secondaryAxis === true;
+    const key = `${kind}|${secondary ? '1' : '0'}`;
+    const group = groups.get(key);
+    if (group) group.indices.push(i);
+    else groups.set(key, { kind, secondary, indices: [i] });
+  }
+  const paintOrder = (g: { kind: string; secondary: boolean }): number =>
+    (g.secondary ? 2 : 0) + (g.kind === 'line' || g.kind === 'area' ? 1 : 0);
+  return [...groups.values()].sort((a, b) => paintOrder(a) - paintOrder(b));
+};
 
 // Build a `<c:txPr>` block carrying axis tick-label font / color and an
 // optional `<a:bodyPr rot="N"/>` rotation. Returns null when neither
@@ -554,8 +594,14 @@ const buildDLblsFromLabels = (dl: ChartSpec['dataLabels'] | undefined): XmlEleme
 
 const dLblsElement = (spec: ChartSpec): XmlElement | null => buildDLblsFromLabels(spec.dataLabels);
 
-const buildBarChart = (spec: ChartSpec, sheet: string, direction: 'col' | 'bar'): XmlElement => {
-  const ser = spec.series.map((_, i) => seriesElement(spec, i, sheet));
+const buildBarChart = (
+  spec: ChartSpec,
+  sheet: string,
+  direction: 'col' | 'bar',
+  seriesIndices: ReadonlyArray<number>,
+  axes: AxisIdPair,
+): XmlElement => {
+  const ser = seriesIndices.map((i) => seriesElement(spec, i, sheet));
   const dl = dLblsElement(spec);
   const grouping = spec.grouping ?? 'clustered';
   const children: XmlElement[] = [
@@ -578,12 +624,17 @@ const buildBarChart = (spec: ChartSpec, sheet: string, direction: 'col' | 'bar')
   if (overlapPct !== undefined) {
     children.push(valNode(c('overlap'), overlapPercent(overlapPct, 'chart: overlapPct')));
   }
-  children.push(valNode(c('axId'), CAT_AX_ID), valNode(c('axId'), VAL_AX_ID));
+  children.push(valNode(c('axId'), axes.cat), valNode(c('axId'), axes.val));
   return elem(c(direction === 'col' ? 'barChart' : 'barChart'), { children });
 };
 
-const buildLineChart = (spec: ChartSpec, sheet: string): XmlElement => {
-  const ser = spec.series.map((_, i) => seriesElement(spec, i, sheet));
+const buildLineChart = (
+  spec: ChartSpec,
+  sheet: string,
+  seriesIndices: ReadonlyArray<number>,
+  axes: AxisIdPair,
+): XmlElement => {
+  const ser = seriesIndices.map((i) => seriesElement(spec, i, sheet));
   const dl = dLblsElement(spec);
   const children: XmlElement[] = [
     valNode(c('grouping'), spec.grouping ?? 'standard'),
@@ -598,8 +649,8 @@ const buildLineChart = (spec: ChartSpec, sheet: string): XmlElement => {
   // authors opt out of markers with `lineMarkers: false`.
   children.push(
     valNode(c('marker'), spec.lineMarkers === false ? '0' : '1'),
-    valNode(c('axId'), CAT_AX_ID),
-    valNode(c('axId'), VAL_AX_ID),
+    valNode(c('axId'), axes.cat),
+    valNode(c('axId'), axes.val),
   );
   return elem(c('lineChart'), { children });
 };
@@ -643,8 +694,13 @@ const buildDoughnutChart = (spec: ChartSpec, sheet: string): XmlElement => {
   return elem(c('doughnutChart'), { children });
 };
 
-const buildAreaChart = (spec: ChartSpec, sheet: string): XmlElement => {
-  const ser = spec.series.map((_, i) => seriesElement(spec, i, sheet));
+const buildAreaChart = (
+  spec: ChartSpec,
+  sheet: string,
+  seriesIndices: ReadonlyArray<number>,
+  axes: AxisIdPair,
+): XmlElement => {
+  const ser = seriesIndices.map((i) => seriesElement(spec, i, sheet));
   const dl = dLblsElement(spec);
   return elem(c('areaChart'), {
     children: [
@@ -652,11 +708,65 @@ const buildAreaChart = (spec: ChartSpec, sheet: string): XmlElement => {
       valNode(c('varyColors'), spec.varyColors ? '1' : '0'),
       ...ser,
       ...(dl ? [dl] : []),
-      valNode(c('axId'), CAT_AX_ID),
-      valNode(c('axId'), VAL_AX_ID),
+      valNode(c('axId'), axes.cat),
+      valNode(c('axId'), axes.val),
     ],
   });
 };
+
+/** One combo plot group, dispatched by its effective kind. */
+const buildComboGroupChart = (
+  spec: ChartSpec,
+  sheet: string,
+  kind: string,
+  seriesIndices: ReadonlyArray<number>,
+  axes: AxisIdPair,
+): XmlElement => {
+  switch (kind) {
+    case 'column':
+      return buildBarChart(spec, sheet, 'col', seriesIndices, axes);
+    case 'bar':
+      return buildBarChart(spec, sheet, 'bar', seriesIndices, axes);
+    case 'line':
+      return buildLineChart(spec, sheet, seriesIndices, axes);
+    case 'area':
+      return buildAreaChart(spec, sheet, seriesIndices, axes);
+    default:
+      throw new Error(`combo chart: series chartKind '${kind}' is not authorable`);
+  }
+};
+
+/**
+ * Secondary value axis (`axPos="r"`, crossing at the category maximum) —
+ * the right-hand axis PowerPoint pairs with `secondaryAxis` series.
+ */
+const secondaryValAxis = (): XmlElement =>
+  elem(c('valAx'), {
+    children: [
+      valNode(c('axId'), SEC_VAL_AX_ID),
+      elem(c('scaling'), { children: [valNode(c('orientation'), 'minMax')] }),
+      valNode(c('delete'), '0'),
+      valNode(c('axPos'), 'r'),
+      valNode(c('crossAx'), SEC_CAT_AX_ID),
+      valNode(c('crosses'), 'max'),
+    ],
+  });
+
+/**
+ * Deleted companion category axis for the secondary pair. PowerPoint
+ * requires every plot group's axId pair to resolve to a cat+val pair,
+ * so the secondary group gets its own (hidden) category axis.
+ */
+const secondaryCatAxis = (): XmlElement =>
+  elem(c('catAx'), {
+    children: [
+      valNode(c('axId'), SEC_CAT_AX_ID),
+      elem(c('scaling'), { children: [valNode(c('orientation'), 'minMax')] }),
+      valNode(c('delete'), '1'),
+      valNode(c('axPos'), 'b'),
+      valNode(c('crossAx'), SEC_VAL_AX_ID),
+    ],
+  });
 
 // Builds an <a:rPr ...><a:solidFill><a:srgbClr/></a:solidFill></a:rPr>
 // payload from a ChartTextStyle. Returns the rPr children to splice
@@ -741,25 +851,45 @@ const titleElement = (title: string, style?: ChartTextStyle, rotationDeg?: numbe
 export const buildChartSpaceDoc = (spec: ChartSpec): XmlDocument => {
   const sheet = 'Sheet1';
 
-  let plotted: XmlElement;
+  const usesComboFields = spec.series.some(
+    (series) => series.chartKind !== undefined || series.secondaryAxis === true,
+  );
+  if (usesComboFields && !COMBO_KINDS.has(spec.kind)) {
+    throw new Error(
+      `chart kind '${spec.kind}' does not support per-series chartKind / secondaryAxis (combo charts require a bar / column / line / area base kind)`,
+    );
+  }
+
+  const allIndices = spec.series.map((_, i) => i);
+  let plottedGroups: XmlElement[];
+  let hasSecondary = false;
   switch (spec.kind) {
     case 'column':
-      plotted = buildBarChart(spec, sheet, 'col');
-      break;
     case 'bar':
-      plotted = buildBarChart(spec, sheet, 'bar');
-      break;
     case 'line':
-      plotted = buildLineChart(spec, sheet);
+    case 'area': {
+      if (usesComboFields) {
+        const groups = comboPlotGroups(spec);
+        hasSecondary = groups.some((group) => group.secondary);
+        plottedGroups = groups.map((group) =>
+          buildComboGroupChart(
+            spec,
+            sheet,
+            group.kind,
+            group.indices,
+            group.secondary ? SECONDARY_AXES : PRIMARY_AXES,
+          ),
+        );
+      } else {
+        plottedGroups = [buildComboGroupChart(spec, sheet, spec.kind, allIndices, PRIMARY_AXES)];
+      }
       break;
+    }
     case 'pie':
-      plotted = buildPieChart(spec, sheet);
+      plottedGroups = [buildPieChart(spec, sheet)];
       break;
     case 'doughnut':
-      plotted = buildDoughnutChart(spec, sheet);
-      break;
-    case 'area':
-      plotted = buildAreaChart(spec, sheet);
+      plottedGroups = [buildDoughnutChart(spec, sheet)];
       break;
     case 'scatter':
     case 'radar':
@@ -779,9 +909,12 @@ export const buildChartSpaceDoc = (spec: ChartSpec): XmlDocument => {
   }
 
   const axisless = spec.kind === 'pie' || spec.kind === 'doughnut';
-  const plotAreaChildren: XmlElement[] = [elem(c('layout')), plotted];
+  const plotAreaChildren: XmlElement[] = [elem(c('layout')), ...plottedGroups];
   if (!axisless) {
     plotAreaChildren.push(catAxis(spec), valAxis(spec));
+    if (hasSecondary) {
+      plotAreaChildren.push(secondaryValAxis(), secondaryCatAxis());
+    }
   }
   // <c:plotArea><c:spPr><a:solidFill> + optional <a:ln><a:solidFill>.
   if (spec.plotAreaFill !== undefined || spec.plotAreaStrokeColor !== undefined) {
