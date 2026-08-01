@@ -65,9 +65,7 @@ interface PlottedKindMap {
 }
 
 /** Kinds a combo plot group can carry (mirrors `ChartSeries.chartKind`). */
-const isComboSeriesKind = (
-  kind: ChartKind,
-): kind is 'bar' | 'column' | 'line' | 'area' =>
+const isComboSeriesKind = (kind: ChartKind): kind is 'bar' | 'column' | 'line' | 'area' =>
   kind === 'bar' || kind === 'column' || kind === 'line' || kind === 'area';
 
 const KIND_MAP: ReadonlyArray<PlottedKindMap> = [
