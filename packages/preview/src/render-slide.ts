@@ -3785,6 +3785,19 @@ const renderChartTitle = (f: ChartFrame, title: string, style?: ChartTextStyle):
   return `<text x="${px(f.x + f.w / 2)}" y="${px(f.titleY)}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="${chartFontPx(sz)}" fill="${fill}" font-weight="${weight}"${fontStyleAttr}>${escapeXml(title)}</text>`;
 };
 
+// Legend text is drawn in `sans-serif` without a text measurer, so pack the
+// items with a char-class width estimate (fullwidth/CJK ≈ 1em, everything else
+// ≈ 0.55em). Fixed per-item slots overlap as soon as a CJK series name exceeds
+// the slot (e.g. 「平均品質スコア（点）」), which this estimate avoids.
+const FULLWIDTH_CHAR_PATTERN =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/u;
+
+const approxLegendTextPx = (text: string, fontPx: number): number => {
+  let units = 0;
+  for (const ch of text) units += FULLWIDTH_CHAR_PATTERN.test(ch) ? 1 : 0.55;
+  return units * fontPx;
+};
+
 const renderChartLegend = (
   f: ChartFrame,
   names: ReadonlyArray<string>,
@@ -3817,44 +3830,47 @@ const renderChartLegend = (
     return `<rect x="${px(swatchX)}" y="${px(swatchY)}" width="9" height="9" fill="${color}"/>`;
   };
   const out: string[] = [];
-  if (position === 'b') {
-    // Default: horizontal row centered at the bottom.
-    const itemPx = Math.min(140, f.w / names.length);
-    const totalW = itemPx * names.length;
-    const startX = f.x + (f.w - totalW) / 2;
+  if (position === 'b' || position === 't') {
+    // Horizontal row centered along the chosen edge. Items are packed by the
+    // estimated label width — fixed per-item slots make long (especially CJK)
+    // series names spill into the neighbouring slot and overlap. When the row
+    // is wider than the frame, shrink the text instead of overlapping.
+    const swatchGapPx = 14;
+    const itemGapPx = 12;
+    const labelWidths = names.map((name, i) =>
+      approxLegendTextPx(name ?? `Series ${i + 1}`, sz * PX_PER_PT),
+    );
+    const naturalTotal =
+      labelWidths.reduce((sum, w) => sum + swatchGapPx + w, 0) + itemGapPx * (names.length - 1);
+    const scale = Math.min(1, f.w / Math.max(1, naturalTotal));
+    const effAttrs =
+      scale < 1
+        ? `font-family="sans-serif" font-size="${chartFontPx(sz * scale)}" fill="${fill}"${weight}${italic}`
+        : textAttrs;
+    const rowY = position === 'b' ? f.legendY : f.y + 12;
+    let cursor = f.x + Math.max(0, (f.w - naturalTotal * scale) / 2);
     for (let i = 0; i < names.length; i++) {
-      const cx = startX + i * itemPx;
-      const swatchX = cx + 4;
-      const swatchY = f.legendY - 4;
-      const labelX = swatchX + 14;
       out.push(
-        swatch(i, swatchX, swatchY),
-        `<text x="${px(labelX)}" y="${px(f.legendY)}" dominant-baseline="middle" ${textAttrs}>${escapeXml(names[i] ?? `Series ${i + 1}`)}</text>`,
+        swatch(i, cursor, rowY - 4),
+        `<text x="${px(cursor + swatchGapPx * scale)}" y="${px(rowY)}" dominant-baseline="middle" ${effAttrs}>${escapeXml(names[i] ?? `Series ${i + 1}`)}</text>`,
       );
-    }
-    return out.join('');
-  }
-  if (position === 't') {
-    const itemPx = Math.min(140, f.w / names.length);
-    const totalW = itemPx * names.length;
-    const startX = f.x + (f.w - totalW) / 2;
-    const yTop = f.y + 4;
-    for (let i = 0; i < names.length; i++) {
-      const cx = startX + i * itemPx;
-      out.push(
-        swatch(i, cx + 4, yTop),
-        `<text x="${px(cx + 18)}" y="${px(yTop + 8)}" dominant-baseline="middle" ${textAttrs}>${escapeXml(names[i] ?? `Series ${i + 1}`)}</text>`,
-      );
+      cursor += (swatchGapPx + (labelWidths[i] ?? 0) + itemGapPx) * scale;
     }
     return out.join('');
   }
   // Right / Top-Right / Left — vertical stack along the chosen edge.
   // 'r' / 'l' center the stack vertically; 'tr' pins it to the top.
+  // The right-edge column is sized to the widest label (capped at 45% of the
+  // frame) so long CJK names don't run past the chart's right edge.
   const lineH = 14;
   const totalH = names.length * lineH;
   const yStart = position === 'tr' ? f.y + 12 : Math.max(f.y + 12, f.y + (f.h - totalH) / 2);
-  const xCol =
-    position === 'l' ? f.x + 6 : position === 'tr' ? f.x + f.w - 100 : /* 'r' */ f.x + f.w - 100;
+  const maxLabelPx = Math.max(
+    0,
+    ...names.map((name, i) => approxLegendTextPx(name ?? `Series ${i + 1}`, sz * PX_PER_PT)),
+  );
+  const rightColW = Math.min(f.w * 0.45, 14 + maxLabelPx + 4);
+  const xCol = position === 'l' ? f.x + 6 : /* 'r' / 'tr' */ f.x + f.w - rightColW;
   for (let i = 0; i < names.length; i++) {
     const yp = yStart + i * lineH;
     out.push(
