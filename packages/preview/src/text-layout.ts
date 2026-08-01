@@ -260,7 +260,7 @@ type LineBuilder = (contentLeft: number, contentRight: number) => { lines: Line[
 // opening brackets to their successor (simple kinsoku).
 const EAST_ASIAN_CHAR = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
 const CLOSING_PUNCT = /^[、。，．・）」』】〉》”’！？：；ー〜…,.!?:;)\]}]+$/;
-const OPENING_PUNCT = /^[（「『【〈《“‘(\[{]+$/;
+const OPENING_PUNCT = /^[（「『【〈《“‘([{]+$/;
 
 const splitEastAsianBreakables = (word: string): string[] => {
   if (!EAST_ASIAN_CHAR.test(word)) return [word];
