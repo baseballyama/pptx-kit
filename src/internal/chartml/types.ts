@@ -52,6 +52,23 @@ export interface ChartSeries {
   /** Optional `#RRGGBB` fill override. Defaults to the theme's accent palette. */
   readonly color?: string;
   /**
+   * Per-series chart-kind override for combo charts (e.g. a `line`
+   * series overlaid on a `column` chart). Series sharing an effective
+   * kind are grouped into one plot group (`<c:barChart>` /
+   * `<c:lineChart>` / `<c:areaChart>`); the groups share the category
+   * axis. Only the category kinds can mix — `bar` / `column` / `line` /
+   * `area`. Absent = plotted with the chart's own `kind`.
+   */
+  readonly chartKind?: 'bar' | 'column' | 'line' | 'area';
+  /**
+   * Plot this series against the secondary value axis — the right-hand
+   * axis PowerPoint shows for combo charts with mixed units
+   * (`<c:valAx>` pair with `axPos="r"` plus a deleted companion
+   * `<c:catAx>`). The builder emits the secondary axis pair on demand.
+   * Only meaningful for the category kinds; rejected for pie / doughnut.
+   */
+  readonly secondaryAxis?: boolean;
+  /**
    * Optional line stroke width in EMU (`<c:ser><c:spPr><a:ln w="…"/>`).
    * Only meaningful for line / area / scatter series. Default falls
    * back to the renderer's own pick.

@@ -64,6 +64,12 @@ interface PlottedKindMap {
   readonly kind: ChartKind;
 }
 
+/** Kinds a combo plot group can carry (mirrors `ChartSeries.chartKind`). */
+const isComboSeriesKind = (
+  kind: ChartKind,
+): kind is 'bar' | 'column' | 'line' | 'area' =>
+  kind === 'bar' || kind === 'column' || kind === 'line' || kind === 'area';
+
 const KIND_MAP: ReadonlyArray<PlottedKindMap> = [
   // `barChart` is overloaded; `<c:barDir val="bar"/>` vs `"col"` decides.
   { localName: 'barChart', kind: 'column' },
@@ -613,29 +619,78 @@ export const readChartSpec = (root: XmlElement): ChartSpec | null => {
   const plotArea = firstChildElement(chart, NAME_PLOT_AREA);
   if (!plotArea) throw new Error('<c:chart> has no <c:plotArea>');
 
-  // Find which "plotted" element the plotArea carries.
-  let plotted: XmlElement | null = null;
-  let kind: ChartKind | null = null;
-  for (const candidate of KIND_MAP) {
-    const found = findFirst(plotArea, [candidate.localName]);
-    if (found) {
-      plotted = found;
-      kind = candidate.kind;
-      // Resolve bar vs column on a `barChart` / `bar3DChart`.
-      if (candidate.localName === 'barChart' || candidate.localName === 'bar3DChart') {
-        const barDir = firstChildElement(found, qname('c', 'barDir', NS_C));
-        const v = barDir !== null ? getAttrValue(barDir, ATTR_VAL) : null;
-        kind = v === 'bar' ? 'bar' : 'column';
-      }
-      break;
-    }
+  // Collect every "plotted" plot-group element the plotArea carries, in
+  // document order. Combo charts emit several (`<c:barChart>` +
+  // `<c:lineChart>` …); single-kind charts emit one.
+  interface PlotGroup {
+    readonly element: XmlElement;
+    readonly kind: ChartKind;
   }
-  if (!plotted || !kind) return null;
+  const kindByLocalName = new Map(KIND_MAP.map((entry) => [entry.localName, entry] as const));
+  const plotGroups: PlotGroup[] = [];
+  for (const child of plotArea.children) {
+    if (child.kind !== 'element' || child.name.namespaceURI !== NS_C) continue;
+    const mapped = kindByLocalName.get(child.name.localName);
+    if (!mapped) continue;
+    let groupKind: ChartKind = mapped.kind;
+    // Resolve bar vs column on a `barChart` / `bar3DChart`.
+    if (mapped.localName === 'barChart' || mapped.localName === 'bar3DChart') {
+      const barDir = firstChildElement(child, qname('c', 'barDir', NS_C));
+      const v = barDir !== null ? getAttrValue(barDir, ATTR_VAL) : null;
+      groupKind = v === 'bar' ? 'bar' : 'column';
+    }
+    plotGroups.push({ element: child, kind: groupKind });
+  }
+  const firstGroup = plotGroups[0];
+  if (!firstGroup) return null;
+  const plotted = firstGroup.element;
+  const kind = firstGroup.kind;
 
-  // Read every <c:ser> in order.
+  // Secondary-axis detection: a combo chart's secondary plot group
+  // references a `<c:valAx>` whose `axPos` is `r` (or `t` for bar
+  // charts). Map valAx axIds → axPos so each group can be classified.
+  const secondaryValAxisIds = new Set<string>();
+  for (const child of plotArea.children) {
+    if (
+      child.kind !== 'element' ||
+      child.name.namespaceURI !== NS_C ||
+      child.name.localName !== 'valAx'
+    ) {
+      continue;
+    }
+    const axIdEl = firstChildElement(child, qname('c', 'axId', NS_C));
+    const axPosEl = firstChildElement(child, qname('c', 'axPos', NS_C));
+    const axId = axIdEl !== null ? getAttrValue(axIdEl, ATTR_VAL) : null;
+    const axPos = axPosEl !== null ? getAttrValue(axPosEl, ATTR_VAL) : null;
+    if (axId !== null && (axPos === 'r' || axPos === 't')) secondaryValAxisIds.add(axId);
+  }
+  const groupUsesSecondaryAxis = (group: XmlElement): boolean => {
+    for (const child of group.children) {
+      if (
+        child.kind === 'element' &&
+        child.name.namespaceURI === NS_C &&
+        child.name.localName === 'axId'
+      ) {
+        const id = getAttrValue(child, ATTR_VAL);
+        if (id !== null && secondaryValAxisIds.has(id)) return true;
+      }
+    }
+    return false;
+  };
+
+  // Read every <c:ser> from every plot group, tagging series from
+  // non-first groups with their group's kind / axis so the round-trip
+  // preserves the combo layout.
   const series: ChartSeries[] = [];
   let categoriesFromFirst: string[] | null = null;
-  for (const ser of allChildElements(plotted, NAME_SER)) {
+  const serEntries: { ser: XmlElement; groupKind: ChartKind; secondary: boolean }[] = [];
+  for (const group of plotGroups) {
+    const secondary = groupUsesSecondaryAxis(group.element);
+    for (const ser of allChildElements(group.element, NAME_SER)) {
+      serEntries.push({ ser, groupKind: group.kind, secondary });
+    }
+  }
+  for (const { ser, groupKind, secondary } of serEntries) {
     const name = readSeriesName(ser);
     const cat = firstChildElement(ser, NAME_CAT);
     if (cat !== null && categoriesFromFirst === null) {
@@ -712,6 +767,8 @@ export const readChartSpec = (root: XmlElement): ChartSpec | null => {
     series.push({
       name,
       values: values ?? [],
+      ...(groupKind !== kind && isComboSeriesKind(groupKind) ? { chartKind: groupKind } : {}),
+      ...(secondary ? { secondaryAxis: true } : {}),
       ...(xValues !== null ? { xValues } : {}),
       ...(bubbleSizes !== null ? { bubbleSizes } : {}),
       ...(color !== undefined ? { color } : {}),

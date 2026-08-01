@@ -127,6 +127,7 @@ import {
   isTableShape,
   type PresentationData,
   type PresentationTheme,
+  type ChartKind,
   type ChartSeries,
   type ChartSpec,
   type ChartTextStyle,
@@ -3381,6 +3382,12 @@ interface AxisSpec {
   readonly orientation: 'vertical' | 'horizontal';
   readonly min: number;
   readonly max: number;
+  /**
+   * Which plot edge a vertical value axis hugs. `right` is the combo
+   * chart's secondary axis; ticks and labels flip to the plot's right
+   * edge. Defaults to `left`.
+   */
+  readonly side?: 'left' | 'right';
   /** percentStacked value axis: ticks are formatted as 0%..100%. */
   readonly percent?: boolean;
   readonly majorUnit?: number;
@@ -3498,31 +3505,31 @@ const renderValueAxis = (f: ChartFrame, axis: AxisSpec): string => {
   for (const t of ticks) {
     if (axis.orientation === 'vertical') {
       const yp = f.plotY + f.plotH - ((t - axis.min) / range) * f.plotH;
+      const onRight = axis.side === 'right';
+      const edgeX = onRight ? f.plotX + f.plotW : f.plotX;
       if (showGrid) {
         out.push(
           `<line x1="${px(f.plotX)}" y1="${px(yp)}" x2="${px(f.plotX + f.plotW)}" y2="${px(yp)}" stroke="${gridStroke}" stroke-width="0.5"/>`,
         );
       }
       if (tickMark !== 'none') {
-        const tx1 = tickMark === 'in' ? f.plotX : f.plotX - tickLen;
-        const tx2 =
-          tickMark === 'out'
-            ? f.plotX
-            : tickMark === 'cross'
-              ? f.plotX + tickLen
-              : f.plotX + tickLen;
+        const outward = onRight ? tickLen : -tickLen;
+        const inward = onRight ? -tickLen : tickLen;
+        const tx1 = tickMark === 'in' ? edgeX : edgeX + outward;
+        const tx2 = tickMark === 'out' ? edgeX : edgeX + inward;
         out.push(
           `<line x1="${px(tx1)}" y1="${px(yp)}" x2="${px(tx2)}" y2="${px(yp)}" stroke="${axisColor}" stroke-width="1"/>`,
         );
       }
-      // Numeric label, right-aligned to the plot's left edge.
+      // Numeric label — right-aligned to the plot's left edge, or
+      // left-aligned to the right edge for a secondary (right) axis.
       // Authored <c:txPr><a:bodyPr rot="N"/> rotates around the
       // label anchor.
-      const labelX = f.plotX - 4;
+      const labelX = onRight ? edgeX + 4 : edgeX - 4;
       const rot = axis.labelRotationDeg ?? 0;
       const transform = rot ? ` transform="rotate(${rot} ${px(labelX)} ${px(yp)})"` : '';
       out.push(
-        `<text x="${px(labelX)}" y="${px(yp)}" text-anchor="end" dominant-baseline="middle" ${axisTickAttrs(axis.labelStyle)}${transform}>${escapeXml(fmtTick(t))}</text>`,
+        `<text x="${px(labelX)}" y="${px(yp)}" text-anchor="${onRight ? 'start' : 'end'}" dominant-baseline="middle" ${axisTickAttrs(axis.labelStyle)}${transform}>${escapeXml(fmtTick(t))}</text>`,
       );
     } else {
       const xp = f.plotX + ((t - axis.min) / range) * f.plotW;
@@ -5095,7 +5102,104 @@ const renderChart = (
 
   let plot = '';
   let axes = '';
-  if (isCartesian) {
+  // Combo chart: per-series kind overrides and/or a secondary value
+  // axis. Split the series into plot groups, bake palette colors by
+  // original index (filtered specs would otherwise re-index), scale
+  // each axis from its own series, and paint bars below lines. The
+  // horizontal `bar` base kind is excluded — its value axis is
+  // horizontal and a line overlay has no meaningful geometry.
+  const isCombo =
+    isCartesian &&
+    spec.kind !== 'bar' &&
+    spec.series.some(
+      (s) => (s.chartKind !== undefined && s.chartKind !== spec.kind) || s.secondaryAxis === true,
+    );
+  if (isCombo) {
+    const baked = spec.series.map((s, i) => ({
+      ...s,
+      color: s.color ?? colors[i % colors.length] ?? '#888',
+    }));
+    const primarySeries = baked.filter((s) => s.secondaryAxis !== true);
+    const secondarySeries = baked.filter((s) => s.secondaryAxis === true);
+    const primaryScale = seriesMinMax({ ...spec, series: primarySeries });
+    const secondaryScale =
+      secondarySeries.length > 0
+        ? seriesMinMax({ ...spec, series: secondarySeries, valueAxis: undefined })
+        : null;
+
+    const N = pointCount(spec);
+    if (!spec.valueAxisHidden) {
+      axes = renderValueAxis(f, {
+        orientation: 'vertical',
+        min: primaryScale.min,
+        max: primaryScale.max,
+        majorUnit: spec.valueAxis?.majorUnit ?? primaryScale.step,
+        ...(spec.valueAxis?.numberFormat !== undefined
+          ? { numberFormat: spec.valueAxis.numberFormat }
+          : {}),
+        ...(spec.valueAxisMajorGridlines !== undefined
+          ? { majorGridlines: spec.valueAxisMajorGridlines }
+          : {}),
+        ...(spec.valueAxisLabelStyle !== undefined ? { labelStyle: spec.valueAxisLabelStyle } : {}),
+      });
+    }
+    if (secondaryScale) {
+      axes += renderValueAxis(f, {
+        orientation: 'vertical',
+        side: 'right',
+        min: secondaryScale.min,
+        max: secondaryScale.max,
+        majorUnit: secondaryScale.step,
+        // Gridlines stay on the primary axis only — a second lattice
+        // with a different pitch reads as noise.
+        majorGridlines: false,
+        ...(spec.valueAxisLabelStyle !== undefined ? { labelStyle: spec.valueAxisLabelStyle } : {}),
+      });
+    }
+    if (N > 0 && !(spec.categoryAxisHidden || spec.categoryAxisTickLabelPos === 'none')) {
+      axes += renderCategoryAxis(
+        f,
+        'horizontal',
+        spec.categories,
+        N,
+        spec.categoryAxisTickLabelSkip ?? 1,
+        spec.categoryAxisLabelStyle,
+        spec.categoryAxisLabelRotationDeg,
+        spec.categoryAxisLabelAlign,
+        spec.categoryAxisLineColor,
+      );
+    }
+
+    // Group by (effective kind, axis); bars first, then line/area overlays.
+    const groups = new Map<
+      string,
+      { kind: ChartKind; secondary: boolean; series: ChartSeries[] }
+    >();
+    for (const s of baked) {
+      const kind = s.chartKind ?? spec.kind;
+      const secondary = s.secondaryAxis === true;
+      const key = `${kind}|${secondary ? '1' : '0'}`;
+      const group = groups.get(key);
+      if (group) group.series.push(s);
+      else groups.set(key, { kind, secondary, series: [s] });
+    }
+    const paintOrder = (g: { kind: ChartKind; secondary: boolean }): number =>
+      (g.secondary ? 2 : 0) + (g.kind === 'line' || g.kind === 'area' ? 1 : 0);
+    for (const group of [...groups.values()].sort((a, b) => paintOrder(a) - paintOrder(b))) {
+      const scale = group.secondary && secondaryScale ? secondaryScale : primaryScale;
+      const groupSpec: ChartSpec = {
+        ...spec,
+        series: group.series,
+        valueAxis: { min: scale.min, max: scale.max },
+      };
+      if (group.kind === 'line' || group.kind === 'area') {
+        plot += renderLineChart(f, groupSpec, colors, group.kind === 'area');
+      } else {
+        plot += renderColumnChart(f, groupSpec, colors);
+      }
+    }
+  }
+  if (!isCombo && isCartesian) {
     const { min, max, step } = seriesMinMax(spec);
     const N = pointCount(spec);
     const majorUnit = spec.valueAxis?.majorUnit ?? step;
@@ -5145,42 +5249,44 @@ const renderChart = (
       );
     }
   }
-  switch (spec.kind) {
-    case 'column':
-    case 'bar':
-      // @office-kit/pptx reports both as `bar` / `column` via separate `kind`;
-      // legacy `barDir` distinction. We branch on `kind`.
-      plot =
-        spec.kind === 'column'
-          ? renderColumnChart(f, spec, colors)
-          : renderBarChart(f, spec, colors);
-      break;
-    case 'line':
-      plot = renderLineChart(f, spec, colors, false);
-      break;
-    case 'area':
-      plot = renderLineChart(f, spec, colors, true);
-      break;
-    case 'pie':
-      plot = renderPieChart(f, spec, colors, false);
-      break;
-    case 'doughnut':
-      plot = renderPieChart(f, spec, colors, true);
-      break;
-    case 'scatter':
-      plot = renderScatterChart(f, spec, colors);
-      break;
-    case 'radar':
-      plot = renderRadarChart(f, spec, colors);
-      break;
-    case 'bubble':
-      plot = renderBubbleChart(f, spec, colors);
-      break;
-    default:
-      // stock / surface / 3D variants the reader still folds into a
-      // modeled kind never reach here; truly unmodeled kinds (resolved
-      // to `null` spec) are handled earlier. Anything left falls back.
-      return null;
+  if (!isCombo) {
+    switch (spec.kind) {
+      case 'column':
+      case 'bar':
+        // @office-kit/pptx reports both as `bar` / `column` via separate `kind`;
+        // legacy `barDir` distinction. We branch on `kind`.
+        plot =
+          spec.kind === 'column'
+            ? renderColumnChart(f, spec, colors)
+            : renderBarChart(f, spec, colors);
+        break;
+      case 'line':
+        plot = renderLineChart(f, spec, colors, false);
+        break;
+      case 'area':
+        plot = renderLineChart(f, spec, colors, true);
+        break;
+      case 'pie':
+        plot = renderPieChart(f, spec, colors, false);
+        break;
+      case 'doughnut':
+        plot = renderPieChart(f, spec, colors, true);
+        break;
+      case 'scatter':
+        plot = renderScatterChart(f, spec, colors);
+        break;
+      case 'radar':
+        plot = renderRadarChart(f, spec, colors);
+        break;
+      case 'bubble':
+        plot = renderBubbleChart(f, spec, colors);
+        break;
+      default:
+        // stock / surface / 3D variants the reader still folds into a
+        // modeled kind never reach here; truly unmodeled kinds (resolved
+        // to `null` spec) are handled earlier. Anything left falls back.
+        return null;
+    }
   }
 
   const emptyHint =
