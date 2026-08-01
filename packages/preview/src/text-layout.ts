@@ -252,6 +252,45 @@ export interface Placement {
 // paragraph model and measurer caches inside layoutTextSvg.
 type LineBuilder = (contentLeft: number, contentRight: number) => { lines: Line[]; blockH: number };
 
+// East Asian text carries no spaces, so a whole CJK clause arrives as one
+// `\S+` "word". Treating it as unbreakable pushes the entire clause to the
+// next line (leaving e.g. a lone bullet glyph behind) — PowerPoint instead
+// breaks East Asian runs between any two characters. Split CJK runs into
+// per-character tokens, gluing closing punctuation to its predecessor and
+// opening brackets to their successor (simple kinsoku).
+const EAST_ASIAN_CHAR = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+const CLOSING_PUNCT = /^[、。，．・）」』】〉》”’！？：；ー〜…,.!?:;)\]}]+$/;
+const OPENING_PUNCT = /^[（「『【〈《“‘([{]+$/;
+
+const splitEastAsianBreakables = (word: string): string[] => {
+  if (!EAST_ASIAN_CHAR.test(word)) return [word];
+  const parts: string[] = [];
+  let latin = '';
+  for (const ch of word) {
+    if (EAST_ASIAN_CHAR.test(ch)) {
+      if (latin !== '') {
+        parts.push(latin);
+        latin = '';
+      }
+      parts.push(ch);
+    } else {
+      latin += ch;
+    }
+  }
+  if (latin !== '') parts.push(latin);
+
+  const glued: string[] = [];
+  for (const part of parts) {
+    const prev = glued.at(-1);
+    if (prev !== undefined && (CLOSING_PUNCT.test(part) || OPENING_PUNCT.test(prev))) {
+      glued[glued.length - 1] = prev + part;
+    } else {
+      glued.push(part);
+    }
+  }
+  return glued;
+};
+
 const specOf = (piece: PieceInput): FontSpec => ({
   family: piece.family,
   sizePx: piece.sizePx,
@@ -354,21 +393,23 @@ export const layoutCore = (input: TextBodyInput, measure: TextMeasurer): LayoutC
           tokens.push({ text: '', piece, isSpace: false, isBreak: true, width: 0 });
           continue;
         }
-        for (const seg of piece.text.match(/\s+|\S+/g) ?? []) {
-          const isSpace = /^\s+$/.test(seg);
-          const w = mWidth(seg, specOf(piece));
-          if (input.wrap && !isSpace && w > avail - bulletLead && [...seg].length > 1) {
-            for (const ch of seg) {
-              tokens.push({
-                text: ch,
-                piece,
-                isSpace: false,
-                isBreak: false,
-                width: mWidth(ch, specOf(piece)),
-              });
+        for (const word of piece.text.match(/\s+|\S+/g) ?? []) {
+          const isSpace = /^\s+$/.test(word);
+          for (const seg of isSpace ? [word] : splitEastAsianBreakables(word)) {
+            const w = mWidth(seg, specOf(piece));
+            if (input.wrap && !isSpace && w > avail - bulletLead && [...seg].length > 1) {
+              for (const ch of seg) {
+                tokens.push({
+                  text: ch,
+                  piece,
+                  isSpace: false,
+                  isBreak: false,
+                  width: mWidth(ch, specOf(piece)),
+                });
+              }
+            } else {
+              tokens.push({ text: seg, piece, isSpace, isBreak: false, width: w });
             }
-          } else {
-            tokens.push({ text: seg, piece, isSpace, isBreak: false, width: w });
           }
         }
       }
